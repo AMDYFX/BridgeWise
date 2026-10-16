@@ -28,7 +28,11 @@ describe('ReserveReconciliationService', () => {
 
     expect(report.balanced).toBe(true);
     expect(report.shortfalls).toEqual([]);
-    expect(report.summary).toMatchObject({ total: 2, balanced: 2, shortfall: 0 });
+    expect(report.summary).toMatchObject({
+      total: 2,
+      balanced: 2,
+      shortfall: 0,
+    });
     expect(report.reconciledAt).toBe(FIXED_NOW);
     expect(service.isReconciled(report)).toBe(true);
   });
@@ -76,7 +80,10 @@ describe('ReserveReconciliationService', () => {
       expected: [{ asset: 'USDC', amount: '1000' }],
     });
 
-    expect(report.assets[0]).toMatchObject({ status: 'SURPLUS', difference: '50' });
+    expect(report.assets[0]).toMatchObject({
+      status: 'SURPLUS',
+      difference: '50',
+    });
     expect(report.shortfalls).toEqual([]);
   });
 
@@ -117,8 +124,13 @@ describe('ReserveReconciliationService', () => {
       expected: [{ asset: 'BTC', amount: '2' }],
     });
 
-    const byAsset = Object.fromEntries(report.assets.map((a) => [a.asset, a.status]));
-    expect(byAsset).toMatchObject({ BTC: 'MISSING_REPORTED', XLM: 'MISSING_EXPECTED' });
+    const byAsset = Object.fromEntries(
+      report.assets.map((a) => [a.asset, a.status]),
+    );
+    expect(byAsset).toMatchObject({
+      BTC: 'MISSING_REPORTED',
+      XLM: 'MISSING_EXPECTED',
+    });
     expect(report.balanced).toBe(false);
     expect(report.summary.missing).toBe(2);
   });
@@ -142,12 +154,16 @@ describe('ReserveReconciliationService', () => {
       expected: [{ asset: 'USDC', amount: '1000' }],
     };
 
-    expect(() => service.assertReconciled(input)).toThrow(ReserveReconciliationError);
+    expect(() => service.assertReconciled(input)).toThrow(
+      ReserveReconciliationError,
+    );
     try {
       service.assertReconciled(input);
     } catch (err) {
       expect(err).toBeInstanceOf(ReserveReconciliationError);
-      expect((err as ReserveReconciliationError).report.shortfalls).toHaveLength(1);
+      expect(
+        (err as ReserveReconciliationError).report.shortfalls,
+      ).toHaveLength(1);
     }
   });
 
@@ -158,5 +174,77 @@ describe('ReserveReconciliationService', () => {
       expected: [{ asset: 'USDC', amount: '1000' }],
     });
     expect(report.balanced).toBe(true);
+  });
+
+  it('emits one critical alert containing all reconciliation gaps', () => {
+    const onGap = jest.fn();
+    const service = new ReserveReconciliationService({ now, onGap });
+    const report = service.reconcile({
+      reported: [
+        { asset: 'USDC', amount: '900' },
+        { asset: 'XLM', amount: '10' },
+      ],
+      expected: [{ asset: 'USDC', amount: '1000' }],
+    });
+
+    expect(onGap).toHaveBeenCalledTimes(1);
+    expect(onGap).toHaveBeenCalledWith({
+      reconciledAt: FIXED_NOW,
+      severity: 'critical',
+      gaps: report.assets.filter((asset) => !asset.withinTolerance),
+      report,
+    });
+  });
+
+  it('does not alert for balanced assets or differences within tolerance', () => {
+    const onGap = jest.fn();
+    const service = new ReserveReconciliationService({ now, onGap });
+
+    service.reconcile({
+      reported: [{ asset: 'USDC', amount: '995' }],
+      expected: [{ asset: 'USDC', amount: '1000' }],
+      tolerance: { absolute: '5' },
+    });
+
+    expect(onGap).not.toHaveBeenCalled();
+  });
+
+  it('classifies a surplus-only alert as warning', () => {
+    const onGap = jest.fn();
+    const service = new ReserveReconciliationService({ now, onGap });
+
+    service.reconcile({
+      reported: [{ asset: 'USDC', amount: '1050' }],
+      expected: [{ asset: 'USDC', amount: '1000' }],
+    });
+
+    expect(onGap.mock.calls[0][0].severity).toBe('warning');
+  });
+
+  it('surfaces alert dispatch failures and supports an explicit error handler', () => {
+    const failure = new Error('alert transport unavailable');
+    const onGap = () => {
+      throw failure;
+    };
+    const input = {
+      reported: [{ asset: 'USDC', amount: '900' }],
+      expected: [{ asset: 'USDC', amount: '1000' }],
+    };
+
+    expect(() =>
+      new ReserveReconciliationService({ now, onGap }).reconcile(input),
+    ).toThrow(failure);
+
+    const onAlertError = jest.fn();
+    const report = new ReserveReconciliationService({
+      now,
+      onGap,
+      onAlertError,
+    }).reconcile(input);
+    expect(report.balanced).toBe(false);
+    expect(onAlertError).toHaveBeenCalledWith(
+      failure,
+      expect.objectContaining({ severity: 'critical' }),
+    );
   });
 });

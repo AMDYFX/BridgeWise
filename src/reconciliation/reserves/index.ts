@@ -13,6 +13,7 @@ export type {
   ExpectedReserve,
   ReserveBalance,
   ReserveReconciliationInput,
+  ReserveReconciliationGapAlert,
   ReserveReconciliationReport,
   ReserveReconciliationStatus,
   ReserveTolerance,

@@ -45,29 +45,45 @@ import { randomUUID } from 'crypto';
  * });
  */
 export class StellarTransferAuditAPI {
-  private readonly config: AuditAPIConfig;
+  private readonly config: Required<AuditAPIConfig>;
+  private readonly now: () => number;
   private auditLogs: Map<string, TransferAuditLog> = new Map();
   private exports: Map<string, AuditExportResult> = new Map();
   private indexByTransferId: Map<string, string[]> = new Map();
   private indexByAddress: Map<string, string[]> = new Map();
 
-  constructor(config: Partial<AuditAPIConfig> = {}) {
+  constructor(
+    config: Partial<AuditAPIConfig> = {},
+    options: { now?: () => number } = {},
+  ) {
     this.config = {
-      storageBackend: config.storageBackend || 'memory',
-      maxSearchResults: config.maxSearchResults || 10000,
-      exportRetentionDays: config.exportRetentionDays || 90,
-      enableCompression: config.enableCompression || false,
+      storageBackend: config.storageBackend ?? 'memory',
+      maxSearchResults: config.maxSearchResults ?? 10000,
+      auditLogRetentionDays: config.auditLogRetentionDays ?? 90,
+      exportRetentionDays: config.exportRetentionDays ?? 90,
+      enableCompression: config.enableCompression ?? false,
     };
+    validateRetentionDays(
+      'auditLogRetentionDays',
+      this.config.auditLogRetentionDays,
+    );
+    validateRetentionDays(
+      'exportRetentionDays',
+      this.config.exportRetentionDays,
+    );
+    this.now = options.now ?? (() => Date.now());
   }
 
   /**
    * Log a transfer action to the audit trail
    */
-  logTransferAction(log: Omit<TransferAuditLog, 'auditId' | 'timestamp'>): TransferAuditLog {
+  logTransferAction(
+    log: Omit<TransferAuditLog, 'auditId' | 'timestamp'>,
+  ): TransferAuditLog {
     const auditLog: TransferAuditLog = {
       ...log,
       auditId: randomUUID(),
-      timestamp: Date.now(),
+      timestamp: this.now(),
     };
 
     this.auditLogs.set(auditLog.auditId, auditLog);
@@ -107,7 +123,9 @@ export class StellarTransferAuditAPI {
       logs = logs.filter((log) => log.sourceChain === query.sourceChain);
     }
     if (query.destinationChain) {
-      logs = logs.filter((log) => log.destinationChain === query.destinationChain);
+      logs = logs.filter(
+        (log) => log.destinationChain === query.destinationChain,
+      );
     }
 
     // Filter by asset code
@@ -180,12 +198,14 @@ export class StellarTransferAuditAPI {
         break;
     }
 
+    const createdAt = this.now();
     const exportResult: AuditExportResult = {
       exportId,
       format: request.format,
       itemCount: searchResult.items.length,
-      createdAt: Date.now(),
-      expiresAt: Date.now() + this.config.exportRetentionDays * 24 * 60 * 60 * 1000,
+      createdAt,
+      expiresAt:
+        createdAt + this.config.exportRetentionDays * 24 * 60 * 60 * 1000,
       data: this.config.enableCompression ? await this.compress(data) : data,
     };
 
@@ -196,13 +216,22 @@ export class StellarTransferAuditAPI {
   /**
    * Get export statistics for given time period
    */
-  async getStatistics(startTime?: number, endTime?: number): Promise<AuditStatistics> {
-    const result = await this.search({ startTime, endTime, limit: this.config.maxSearchResults });
+  async getStatistics(
+    startTime?: number,
+    endTime?: number,
+  ): Promise<AuditStatistics> {
+    const result = await this.search({
+      startTime,
+      endTime,
+      limit: this.config.maxSearchResults,
+    });
 
     const completedLogs = result.items.filter(
       (log) => log.status === AuditStatus.COMPLETED,
     );
-    const failedLogs = result.items.filter((log) => log.status === AuditStatus.FAILED);
+    const failedLogs = result.items.filter(
+      (log) => log.status === AuditStatus.FAILED,
+    );
 
     const uniqueAddresses = new Set([
       ...result.items.map((log) => log.fromAddress),
@@ -218,7 +247,8 @@ export class StellarTransferAuditAPI {
       totalTransfers: result.total,
       successfulTransfers: completedLogs.length,
       failedTransfers: failedLogs.length,
-      averageAmountUSD: result.items.length > 0 ? totalVolume / result.items.length : 0,
+      averageAmountUSD:
+        result.items.length > 0 ? totalVolume / result.items.length : 0,
       totalVolumeUSD: totalVolume,
       uniqueAddresses: uniqueAddresses.size,
       lastAuditTime: result.items.length > 0 ? result.items[0].timestamp : 0,
@@ -248,12 +278,12 @@ export class StellarTransferAuditAPI {
    * Cleanup expired exports
    */
   cleanupExpiredExports(): number {
-    const now = Date.now();
+    const now = this.now();
     let removed = 0;
 
     const entriesToDelete: string[] = [];
     for (const [exportId, exportResult] of this.exports.entries()) {
-      if (exportResult.expiresAt < now) {
+      if (exportResult.expiresAt <= now) {
         entriesToDelete.push(exportId);
       }
     }
@@ -264,6 +294,35 @@ export class StellarTransferAuditAPI {
     }
 
     return removed;
+  }
+
+  /** Remove audit records at or beyond the configured retention boundary. */
+  cleanupExpiredAuditLogs(): number {
+    const cutoff =
+      this.now() - this.config.auditLogRetentionDays * 24 * 60 * 60 * 1000;
+    let removed = 0;
+
+    for (const [auditId, log] of this.auditLogs.entries()) {
+      if (log.timestamp > cutoff) continue;
+
+      this.auditLogs.delete(auditId);
+      this.removeFromIndex(this.indexByTransferId, log.transferId, auditId);
+      this.removeFromIndex(this.indexByAddress, log.fromAddress, auditId);
+      if (log.toAddress !== log.fromAddress) {
+        this.removeFromIndex(this.indexByAddress, log.toAddress, auditId);
+      }
+      removed++;
+    }
+
+    return removed;
+  }
+
+  /** Run both retention policies; suitable for a scheduled maintenance job. */
+  cleanupExpiredData(): { auditLogs: number; exports: number } {
+    return {
+      auditLogs: this.cleanupExpiredAuditLogs(),
+      exports: this.cleanupExpiredExports(),
+    };
   }
 
   /**
@@ -295,6 +354,18 @@ export class StellarTransferAuditAPI {
       }
       this.indexByAddress.set(log.toAddress, toAddressLogs);
     }
+  }
+
+  private removeFromIndex(
+    index: Map<string, string[]>,
+    key: string,
+    auditId: string,
+  ): void {
+    const ids = index.get(key);
+    if (!ids) return;
+    const remaining = ids.filter((id) => id !== auditId);
+    if (remaining.length === 0) index.delete(key);
+    else index.set(key, remaining);
   }
 
   private logsToCSV(logs: TransferAuditLog[]): string {
@@ -346,7 +417,10 @@ export class StellarTransferAuditAPI {
       `Generated: ${new Date().toISOString()}`,
       `Total Records: ${logs.length}`,
       '---',
-      ...logs.map((log) => `${log.transferId} - ${log.action} - ${new Date(log.timestamp).toISOString()}`),
+      ...logs.map(
+        (log) =>
+          `${log.transferId} - ${log.action} - ${new Date(log.timestamp).toISOString()}`,
+      ),
     ];
 
     return lines.join('\n');
@@ -359,5 +433,11 @@ export class StellarTransferAuditAPI {
       return new TextEncoder().encode(data);
     }
     return data;
+  }
+}
+
+function validateRetentionDays(name: string, days: number): void {
+  if (!Number.isInteger(days) || days < 1) {
+    throw new RangeError(`${name} must be a positive integer`);
   }
 }

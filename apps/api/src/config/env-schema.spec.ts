@@ -2,6 +2,25 @@ import { EnvironmentValidator, ENV_SCHEMA } from './env-schema';
 
 describe('EnvironmentValidator', () => {
   const originalEnv = { ...process.env };
+  const validEnvironment = {
+    NODE_ENV: 'production',
+    DB_HOST: 'db.example.com',
+    DB_PORT: '5432',
+    DB_USERNAME: 'bridgewise',
+    DB_PASSWORD: 'synthetic-test-password',
+    DB_NAME: 'bridgewise_test',
+    DB_SSL: 'true',
+    FORCE_HTTPS: 'true',
+    CORS_ORIGIN: 'https://app.example.com',
+    API_KEY: 'synthetic-test-key',
+    RPC_ETHEREUM: 'https://eth.example.com',
+    RPC_POLYGON: 'https://polygon.example.com',
+    RPC_BSC: 'https://bsc.example.com',
+    RPC_ARBITRUM: 'https://arbitrum.example.com',
+    RPC_OPTIMISM: 'https://optimism.example.com',
+    RPC_BASE: 'https://base.example.com',
+    VAULT_ENCRYPTION_KEY: 'synthetic-test-key',
+  };
 
   beforeEach(() => {
     // Reset to a clean state
@@ -135,6 +154,82 @@ describe('EnvironmentValidator', () => {
 
       expect(result.errors.some((e) => e.key === 'VAULT_ENCRYPTION_KEY')).toBe(
         true,
+      );
+    });
+
+    it('should validate the supplied configuration without reading process.env', () => {
+      const result = EnvironmentValidator.validate(
+        'production',
+        validEnvironment,
+      );
+
+      expect(result.valid).toBe(true);
+      expect(result.errors).toHaveLength(0);
+    });
+
+    it('should reject whitespace-only required values and invalid numeric boundaries', () => {
+      const result = EnvironmentValidator.validate('production', {
+        ...validEnvironment,
+        DB_HOST: '   ',
+        PORT: '65536',
+        API_TIMEOUT: 'Infinity',
+      });
+
+      expect(result.errors.some((error) => error.key === 'DB_HOST')).toBe(true);
+      expect(result.errors.some((error) => error.key === 'PORT')).toBe(true);
+      expect(result.errors.some((error) => error.key === 'API_TIMEOUT')).toBe(
+        true,
+      );
+    });
+
+    it('should reject fractional port values', () => {
+      const result = EnvironmentValidator.validate('production', {
+        ...validEnvironment,
+        PORT: '3000.5',
+      });
+
+      expect(result.errors.some((error) => error.key === 'PORT')).toBe(true);
+    });
+
+    it('should reject environment mismatches and unsafe production settings', () => {
+      const result = EnvironmentValidator.validate('production', {
+        ...validEnvironment,
+        NODE_ENV: 'staging',
+        FORCE_HTTPS: 'false',
+        DB_SSL: 'false',
+        CORS_ORIGIN: '*',
+      });
+
+      expect(result.valid).toBe(false);
+      expect(result.errors.map((error) => error.key)).toEqual(
+        expect.arrayContaining([
+          'NODE_ENV',
+          'FORCE_HTTPS',
+          'DB_SSL',
+          'CORS_ORIGIN',
+        ]),
+      );
+    });
+
+    it('should reject production placeholders and insecure URLs without exposing values', () => {
+      const result = EnvironmentValidator.validate('production', {
+        ...validEnvironment,
+        API_KEY: 'your_production_api_key_here',
+        RPC_ETHEREUM: 'http://rpc.example.com',
+        RPC_BSC: 'https://rpc.example.com/YOUR_PROJECT_ID',
+        CORS_ORIGIN: 'https://app.example.com, *',
+      });
+
+      expect(result.errors.map((error) => error.key)).toEqual(
+        expect.arrayContaining([
+          'API_KEY',
+          'RPC_ETHEREUM',
+          'RPC_BSC',
+          'CORS_ORIGIN',
+        ]),
+      );
+      expect(JSON.stringify(result.errors)).not.toContain(
+        'your_production_api_key_here',
       );
     });
   });

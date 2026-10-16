@@ -300,20 +300,33 @@ export class EnvironmentValidator {
   /**
    * Validate a specific environment configuration
    */
-  static validate(env: Environment): ValidationResult {
+  static validate(
+    env: Environment,
+    values: Record<string, string | undefined> = process.env,
+  ): ValidationResult {
     const errors: ValidationError[] = [];
     const warnings: ValidationWarning[] = [];
 
+    if (values.NODE_ENV && values.NODE_ENV !== env) {
+      errors.push({
+        key: 'NODE_ENV',
+        error: `NODE_ENV is "${values.NODE_ENV}" but validation environment is "${env}"`,
+        severity: 'error',
+        environment: env,
+      });
+    }
+
     Object.entries(ENV_SCHEMA).forEach(([envKey, definition]) => {
-      const value = process.env[envKey];
+      const value = values[envKey];
+      const isPresent = value !== undefined && value.trim().length > 0;
       const isRequired =
         definition.required || definition.requiredIn?.includes(env);
 
       // Check if required variable is missing
-      if (isRequired && !value) {
+      if (isRequired && !isPresent) {
         errors.push({
           key: envKey,
-          error: `Required environment variable "${envKey}" is not set`,
+          error: `Required environment variable "${envKey}" is not set or is empty`,
           severity: 'error',
           environment: env,
         });
@@ -321,7 +334,7 @@ export class EnvironmentValidator {
       }
 
       // Skip validation if not provided and not required
-      if (!value) {
+      if (!isPresent) {
         return;
       }
 
@@ -352,8 +365,80 @@ export class EnvironmentValidator {
 
     // Production-specific warnings
     if (env === 'production') {
-      const productionWarnings = this.validateProduction();
+      const productionWarnings = this.validateProduction(values);
       warnings.push(...productionWarnings);
+
+      if (values.FORCE_HTTPS !== 'true') {
+        errors.push({
+          key: 'FORCE_HTTPS',
+          error: 'FORCE_HTTPS must be true in production',
+          severity: 'error',
+          environment: env,
+        });
+      }
+      if (values.DB_SSL !== 'true') {
+        errors.push({
+          key: 'DB_SSL',
+          error: 'DB_SSL must be true in production',
+          severity: 'error',
+          environment: env,
+        });
+      }
+      if (
+        values.CORS_ORIGIN?.split(',').some((origin) => origin.trim() === '*')
+      ) {
+        errors.push({
+          key: 'CORS_ORIGIN',
+          error: 'CORS_ORIGIN must use explicit origins in production',
+          severity: 'error',
+          environment: env,
+        });
+      }
+
+      for (const [key, value] of Object.entries(values)) {
+        if (!value?.trim()) continue;
+        if (
+          /(PASSWORD|SECRET|TOKEN|PRIVATE[_-]?KEY|API[_-]?KEY|CREDENTIAL|ENCRYPTION[_-]?KEY)/i.test(
+            key,
+          ) &&
+          /^(?:your[_-]|<|change[_-]?me$|changeme$|placeholder$|generate-with-|replace[_-]?me)/i.test(
+            value.trim(),
+          )
+        ) {
+          errors.push({
+            key,
+            error: `"${key}" must not contain a template placeholder in production`,
+            severity: 'error',
+            environment: env,
+          });
+        }
+      }
+
+      for (const [key, definition] of Object.entries(ENV_SCHEMA)) {
+        const value = values[key];
+        if (!value?.trim() || definition.type !== 'url') continue;
+        if (/(?:YOUR_|<[^>]+>|\bplaceholder\b)/i.test(value)) {
+          errors.push({
+            key,
+            error: `"${key}" must not contain a template placeholder in production`,
+            severity: 'error',
+            environment: env,
+          });
+          continue;
+        }
+        try {
+          if (new URL(value).protocol !== 'https:') {
+            errors.push({
+              key,
+              error: `"${key}" must use HTTPS in production`,
+              severity: 'error',
+              environment: env,
+            });
+          }
+        } catch {
+          // The type validator above reports malformed URLs without echoing values.
+        }
+      }
     }
 
     return {
@@ -373,8 +458,26 @@ export class EnvironmentValidator {
   ): { valid: boolean; error?: string } {
     switch (type) {
       case 'number':
-        if (isNaN(Number(value))) {
+        if (!Number.isFinite(Number(value))) {
           return { valid: false, error: `"${key}" must be a number` };
+        }
+        if (key.endsWith('_PORT') || key === 'PORT') {
+          if (
+            !Number.isInteger(Number(value)) ||
+            Number(value) < 1 ||
+            Number(value) > 65535
+          ) {
+            return {
+              valid: false,
+              error: `"${key}" must be an integer between 1 and 65535`,
+            };
+          }
+        }
+        if (
+          key.endsWith('_TIMEOUT') &&
+          (!Number.isInteger(Number(value)) || Number(value) <= 0)
+        ) {
+          return { valid: false, error: `"${key}" must be a positive integer` };
         }
         break;
       case 'boolean':
@@ -403,11 +506,12 @@ export class EnvironmentValidator {
   /**
    * Validate production-specific requirements
    */
-  private static validateProduction(): ValidationWarning[] {
+  private static validateProduction(
+    values: Record<string, string | undefined>,
+  ): ValidationWarning[] {
     const warnings: ValidationWarning[] = [];
-
     // Check FORCE_HTTPS
-    if (process.env.FORCE_HTTPS !== 'true') {
+    if (values.FORCE_HTTPS !== 'true') {
       warnings.push({
         key: 'FORCE_HTTPS',
         warning: 'FORCE_HTTPS should be set to true in production',
@@ -417,7 +521,7 @@ export class EnvironmentValidator {
     }
 
     // Check CORS_ORIGIN
-    const corsOrigin = process.env.CORS_ORIGIN || '';
+    const corsOrigin = values.CORS_ORIGIN || '';
     if (corsOrigin === '*') {
       warnings.push({
         key: 'CORS_ORIGIN',
@@ -429,7 +533,7 @@ export class EnvironmentValidator {
     }
 
     // Check DB_SSL
-    if (process.env.DB_SSL !== 'true') {
+    if (values.DB_SSL !== 'true') {
       warnings.push({
         key: 'DB_SSL',
         warning: 'DB_SSL should be true in production',
@@ -439,10 +543,7 @@ export class EnvironmentValidator {
     }
 
     // Check LOG_LEVEL
-    if (
-      process.env.LOG_LEVEL === 'debug' ||
-      process.env.LOG_LEVEL === 'verbose'
-    ) {
+    if (values.LOG_LEVEL === 'debug' || values.LOG_LEVEL === 'verbose') {
       warnings.push({
         key: 'LOG_LEVEL',
         warning:

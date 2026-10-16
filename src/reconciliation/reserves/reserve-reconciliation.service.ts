@@ -28,6 +28,7 @@ import type {
   ExpectedReserve,
   ReserveBalance,
   ReserveReconciliationInput,
+  ReserveReconciliationGapAlert,
   ReserveReconciliationReport,
   ReserveTolerance,
 } from './reserve-reconciliation.types';
@@ -40,14 +41,26 @@ const DEFAULT_TOLERANCE: Required<ReserveTolerance> = {
 export class ReserveReconciliationService {
   private readonly defaultTolerance: Required<ReserveTolerance>;
   private readonly now: () => number;
+  private readonly onGap?: (alert: ReserveReconciliationGapAlert) => void;
+  private readonly onAlertError?: (
+    error: unknown,
+    alert: ReserveReconciliationGapAlert,
+  ) => void;
 
   constructor(
     options: {
       defaultTolerance?: ReserveTolerance;
       now?: () => number;
+      onGap?: (alert: ReserveReconciliationGapAlert) => void;
+      onAlertError?: (
+        error: unknown,
+        alert: ReserveReconciliationGapAlert,
+      ) => void;
     } = {},
   ) {
     this.now = options.now ?? (() => Date.now());
+    this.onGap = options.onGap;
+    this.onAlertError = options.onAlertError;
     this.defaultTolerance = this.mergeTolerance(options.defaultTolerance);
   }
 
@@ -55,12 +68,25 @@ export class ReserveReconciliationService {
   reconcile(input: ReserveReconciliationInput): ReserveReconciliationReport {
     const tolerance = this.mergeTolerance(input.tolerance);
 
-    const reported = this.aggregate(input.reported ?? [], (r) => r.asset, (r) => r.amount);
-    const expected = this.aggregate(input.expected ?? [], (e) => e.asset, (e) => e.amount);
+    const reported = this.aggregate(
+      input.reported ?? [],
+      (r) => r.asset,
+      (r) => r.amount,
+    );
+    const expected = this.aggregate(
+      input.expected ?? [],
+      (e) => e.asset,
+      (e) => e.amount,
+    );
 
     const assetKeys = this.orderedAssetKeys(reported, expected);
     const assets = assetKeys.map((key) =>
-      this.reconcileAsset(key.display, reported.get(key.norm), expected.get(key.norm), tolerance),
+      this.reconcileAsset(
+        key.display,
+        reported.get(key.norm),
+        expected.get(key.norm),
+        tolerance,
+      ),
     );
 
     const summary = {
@@ -69,12 +95,13 @@ export class ReserveReconciliationService {
       surplus: assets.filter((a) => a.status === 'SURPLUS').length,
       shortfall: assets.filter((a) => a.status === 'SHORTFALL').length,
       missing: assets.filter(
-        (a) => a.status === 'MISSING_REPORTED' || a.status === 'MISSING_EXPECTED',
+        (a) =>
+          a.status === 'MISSING_REPORTED' || a.status === 'MISSING_EXPECTED',
       ).length,
       invalid: assets.filter((a) => a.status === 'INVALID_DATA').length,
     };
 
-    return {
+    const report: ReserveReconciliationReport = {
       reconciledAt: this.now(),
       balanced: assets.every((a) => a.withinTolerance),
       assets,
@@ -82,6 +109,30 @@ export class ReserveReconciliationService {
       appliedTolerance: tolerance,
       summary,
     };
+
+    const gaps = assets.filter((asset) => !asset.withinTolerance);
+    if (gaps.length > 0 && this.onGap) {
+      const alert: ReserveReconciliationGapAlert = {
+        reconciledAt: report.reconciledAt,
+        severity: gaps.some((gap) =>
+          ['SHORTFALL', 'MISSING_REPORTED', 'INVALID_DATA'].includes(
+            gap.status,
+          ),
+        )
+          ? 'critical'
+          : 'warning',
+        gaps,
+        report,
+      };
+      try {
+        this.onGap(alert);
+      } catch (error) {
+        if (!this.onAlertError) throw error;
+        this.onAlertError(error, alert);
+      }
+    }
+
+    return report;
   }
 
   /** True when the report contains no shortfall and every asset is in tolerance. */
@@ -94,7 +145,9 @@ export class ReserveReconciliationService {
    * detected — convenient for callers that want reconciliation to be a hard
    * gate in a settlement or payout pipeline.
    */
-  assertReconciled(input: ReserveReconciliationInput): ReserveReconciliationReport {
+  assertReconciled(
+    input: ReserveReconciliationInput,
+  ): ReserveReconciliationReport {
     const report = this.reconcile(input);
     if (!this.isReconciled(report)) {
       const offenders = report.assets
@@ -114,9 +167,14 @@ export class ReserveReconciliationService {
   private mergeTolerance(
     override: ReserveTolerance | undefined,
   ): Required<ReserveTolerance> {
-    const merged = { ...this.defaultTolerance ?? DEFAULT_TOLERANCE, ...(override ?? {}) };
+    const merged = {
+      ...(this.defaultTolerance ?? DEFAULT_TOLERANCE),
+      ...(override ?? {}),
+    };
     return {
-      absolute: isValidNonNegativeAmount(merged.absolute) ? merged.absolute : '0',
+      absolute: isValidNonNegativeAmount(merged.absolute)
+        ? merged.absolute
+        : '0',
       relativeBps:
         Number.isFinite(merged.relativeBps) && merged.relativeBps >= 0
           ? merged.relativeBps
@@ -182,7 +240,10 @@ export class ReserveReconciliationService {
     const expected = expectedEntry?.total ?? null;
 
     // Malformed input on either side fails closed.
-    if ((reportedEntry && reported === null) || (expectedEntry && expected === null)) {
+    if (
+      (reportedEntry && reported === null) ||
+      (expectedEntry && expected === null)
+    ) {
       return {
         asset,
         reported,
@@ -261,9 +322,7 @@ export class ReserveReconciliationService {
     tolerance: Required<ReserveTolerance>,
   ): string {
     const relative =
-      tolerance.relativeBps > 0
-        ? bpsOf(expected, tolerance.relativeBps)
-        : '0';
+      tolerance.relativeBps > 0 ? bpsOf(expected, tolerance.relativeBps) : '0';
     return compareAmounts(tolerance.absolute, relative) >= 0
       ? tolerance.absolute
       : relative;
@@ -283,7 +342,9 @@ export class ReserveReconciliationError extends Error {
 
 /** Normalize an asset symbol for grouping (trim + upper-case). */
 function normalizeAsset(asset: string): string {
-  return String(asset ?? '').trim().toUpperCase();
+  return String(asset ?? '')
+    .trim()
+    .toUpperCase();
 }
 
 /**
