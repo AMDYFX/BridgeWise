@@ -1,6 +1,6 @@
 /**
  * Chain & Asset Allowlist Service
- * 
+ *
  * Enforces explicit security allowlists for supported blockchain networks,
  * ERC-20 / SEP-41 token contracts, bridge router smart contracts, and cross-chain routes.
  */
@@ -36,9 +36,9 @@ export class ChainAssetAllowlistService {
   private approvedContracts: Map<string, Set<string>> = new Map(); // chainId => Set(contractAddress)
   private approvedRoutes: Map<string, ApprovedRoute> = new Map(); // routeId => ApprovedRoute
 
-  constructor() {
+  constructor(options: { loadDefaults?: boolean } = {}) {
     // Populate default production-approved chains & assets
-    this.initDefaultAllowlists();
+    if (options.loadDefaults !== false) this.initDefaultAllowlists();
   }
 
   /**
@@ -53,7 +53,10 @@ export class ChainAssetAllowlistService {
   /**
    * Check if an asset is allowed on a specific chain.
    */
-  public isAssetSupported(chainId: string | number, symbolOrAddress: string): boolean {
+  public isAssetSupported(
+    chainId: string | number,
+    symbolOrAddress: string,
+  ): boolean {
     const chainKey = String(chainId).toLowerCase();
     if (!this.isChainSupported(chainKey)) {
       return false;
@@ -72,18 +75,24 @@ export class ChainAssetAllowlistService {
   /**
    * Check if a smart contract address is explicitly approved on a specific chain.
    */
-  public isContractApproved(chainId: string | number, contractAddress: string): boolean {
+  public isContractApproved(
+    chainId: string | number,
+    contractAddress: string,
+  ): boolean {
     const chainKey = String(chainId).toLowerCase();
     if (!this.isChainSupported(chainKey)) {
       return false;
     }
+
+    const normalizedAddress = normalizeContractAddress(contractAddress);
+    if (!normalizedAddress) return false;
 
     const contracts = this.approvedContracts.get(chainKey);
     if (!contracts) {
       return false;
     }
 
-    return contracts.has(contractAddress.toLowerCase());
+    return contracts.has(normalizedAddress);
   }
 
   /**
@@ -93,7 +102,7 @@ export class ChainAssetAllowlistService {
     sourceChainId: string | number,
     targetChainId: string | number,
     sourceAssetSymbol: string,
-    targetAssetSymbol: string
+    targetAssetSymbol: string,
   ): boolean {
     const srcKey = String(sourceChainId).toLowerCase();
     const tgtKey = String(targetChainId).toLowerCase();
@@ -102,11 +111,19 @@ export class ChainAssetAllowlistService {
       return false;
     }
 
-    if (!this.isAssetSupported(srcKey, sourceAssetSymbol) || !this.isAssetSupported(tgtKey, targetAssetSymbol)) {
+    if (
+      !this.isAssetSupported(srcKey, sourceAssetSymbol) ||
+      !this.isAssetSupported(tgtKey, targetAssetSymbol)
+    ) {
       return false;
     }
 
-    const routeId = this.buildRouteId(srcKey, tgtKey, sourceAssetSymbol, targetAssetSymbol);
+    const routeId = this.buildRouteId(
+      srcKey,
+      tgtKey,
+      sourceAssetSymbol,
+      targetAssetSymbol,
+    );
     const route = this.approvedRoutes.get(routeId);
     return !!route && route.enabled;
   }
@@ -128,13 +145,17 @@ export class ChainAssetAllowlistService {
   /**
    * Register or update a supported asset for a chain.
    */
-  public addSupportedAsset(chainId: string | number, config: AssetConfig): void {
+  public addSupportedAsset(
+    chainId: string | number,
+    config: AssetConfig,
+  ): void {
     const chainKey = String(chainId).toLowerCase();
     if (!this.supportedAssets.has(chainKey)) {
       this.supportedAssets.set(chainKey, new Map());
     }
 
-    const chainMap = this.supportedAssets.get(chainKey)!;
+    const chainMap = this.supportedAssets.get(chainKey);
+    if (!chainMap) return;
     chainMap.set(config.symbol.toLowerCase(), config);
     chainMap.set(config.addressOrIssuer.toLowerCase(), config);
   }
@@ -142,13 +163,26 @@ export class ChainAssetAllowlistService {
   /**
    * Approve a smart contract address on a chain.
    */
-  public addApprovedContract(chainId: string | number, contractAddress: string): void {
+  public addApprovedContract(
+    chainId: string | number,
+    contractAddress: string,
+  ): void {
     const chainKey = String(chainId).toLowerCase();
+    if (!this.supportedChains.has(chainKey)) {
+      throw new Error(
+        `Cannot approve a contract for unconfigured chain ${chainKey}`,
+      );
+    }
+    const normalizedAddress = normalizeContractAddress(contractAddress);
+    if (!normalizedAddress) {
+      throw new Error('Contract address must be valid and non-zero');
+    }
+
     if (!this.approvedContracts.has(chainKey)) {
       this.approvedContracts.set(chainKey, new Set());
     }
 
-    this.approvedContracts.get(chainKey)!.add(contractAddress.toLowerCase());
+    this.approvedContracts.get(chainKey)?.add(normalizedAddress);
   }
 
   /**
@@ -159,7 +193,7 @@ export class ChainAssetAllowlistService {
       route.sourceChainId,
       route.targetChainId,
       route.sourceAssetSymbol,
-      route.targetAssetSymbol
+      route.targetAssetSymbol,
     );
     this.approvedRoutes.set(routeId, { ...route, routeId });
   }
@@ -182,24 +216,68 @@ export class ChainAssetAllowlistService {
     return Array.from(this.supportedChains.values()).filter((c) => c.enabled);
   }
 
-  private buildRouteId(srcChain: string, tgtChain: string, srcAsset: string, tgtAsset: string): string {
+  private buildRouteId(
+    srcChain: string,
+    tgtChain: string,
+    srcAsset: string,
+    tgtAsset: string,
+  ): string {
     return `${srcChain.toLowerCase()}:${srcAsset.toLowerCase()}->${tgtChain.toLowerCase()}:${tgtAsset.toLowerCase()}`;
   }
 
   private initDefaultAllowlists(): void {
     // Ethereum Mainnet (1)
-    this.addSupportedChain({ chainId: '1', name: 'Ethereum Mainnet', type: 'EVM', isMainnet: true, enabled: true });
-    this.addSupportedAsset('1', { symbol: 'USDC', addressOrIssuer: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', decimals: 6, enabled: true });
-    this.addSupportedAsset('1', { symbol: 'USDT', addressOrIssuer: '0xdac17f958d2ee523a2206206994597c13d831ec7', decimals: 6, enabled: true });
+    this.addSupportedChain({
+      chainId: '1',
+      name: 'Ethereum Mainnet',
+      type: 'EVM',
+      isMainnet: true,
+      enabled: true,
+    });
+    this.addSupportedAsset('1', {
+      symbol: 'USDC',
+      addressOrIssuer: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+      decimals: 6,
+      enabled: true,
+    });
+    this.addSupportedAsset('1', {
+      symbol: 'USDT',
+      addressOrIssuer: '0xdac17f958d2ee523a2206206994597c13d831ec7',
+      decimals: 6,
+      enabled: true,
+    });
     this.addApprovedContract('1', '0x1111111111111111111111111111111111111111');
 
     // Arbitrum One (42161)
-    this.addSupportedChain({ chainId: '42161', name: 'Arbitrum One', type: 'EVM', isMainnet: true, enabled: true });
-    this.addSupportedAsset('42161', { symbol: 'USDC', addressOrIssuer: '0xaf88d065e77c8cc2239327c5edb3a432268e5831', decimals: 6, enabled: true });
+    this.addSupportedChain({
+      chainId: '42161',
+      name: 'Arbitrum One',
+      type: 'EVM',
+      isMainnet: true,
+      enabled: true,
+    });
+    this.addSupportedAsset('42161', {
+      symbol: 'USDC',
+      addressOrIssuer: '0xaf88d065e77c8cc2239327c5edb3a432268e5831',
+      decimals: 6,
+      enabled: true,
+    });
 
     // Stellar Mainnet (stellar-mainnet)
-    this.addSupportedChain({ chainId: 'stellar-mainnet', name: 'Stellar Mainnet', type: 'STELLAR', isMainnet: true, enabled: true });
-    this.addSupportedAsset('stellar-mainnet', { symbol: 'USDC', addressOrIssuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN', decimals: 7, enabled: true });
+    this.addSupportedChain({
+      chainId: 'stellar-mainnet',
+      name: 'Stellar Mainnet',
+      type: 'STELLAR',
+      isMainnet: true,
+      enabled: true,
+    });
+    this.addSupportedAsset('stellar-mainnet', {
+      symbol: 'USDC',
+      addressOrIssuer:
+        'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+      decimals: 7,
+      enabled: true,
+    });
 
     // Approve default USDC cross-chain routes
     this.addApprovedRoute({
@@ -219,4 +297,19 @@ export class ChainAssetAllowlistService {
       enabled: true,
     });
   }
+}
+
+function normalizeContractAddress(address: string): string | undefined {
+  const normalized = String(address ?? '')
+    .trim()
+    .toLowerCase();
+  if (!normalized || /\s/.test(normalized)) return undefined;
+
+  if (normalized.startsWith('0x')) {
+    if (!/^0x[a-f0-9]{40}$/.test(normalized) || /^0x0{40}$/.test(normalized)) {
+      return undefined;
+    }
+  }
+
+  return normalized;
 }

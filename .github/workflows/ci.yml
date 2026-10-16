@@ -34,6 +34,9 @@ jobs:
       - name: Test production-readiness controls
         run: pnpm exec jest --runInBand --runTestsByPath apps/api/src/config/env-schema.spec.ts src/audit/transfers/stellar/audit.service.spec.ts src/reconciliation/reserves/reserve-reconciliation.service.spec.ts scripts/deploy-contracts.spec.ts --moduleFileExtensions ts json js
 
+      - name: Test deployment and incident readiness controls
+        run: pnpm exec jest --runInBand --runTestsByPath scripts/deployment-preflight.spec.ts src/config/allowlist/chain-asset-allowlist.service.spec.ts src/audit/transfers/stellar/audit.service.spec.ts --moduleFileExtensions ts json js
+
       - name: Test production environment loading
         run: pnpm --filter api exec jest --runInBand --moduleFileExtensions ts json js -- config/env-loader.spec.ts
 

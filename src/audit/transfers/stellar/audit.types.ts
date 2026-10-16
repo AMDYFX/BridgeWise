@@ -104,6 +104,55 @@ export interface AuditExportResult {
   data?: string | Uint8Array;
 }
 
+export interface IncidentEvidenceRequest {
+  incidentId: string;
+  requestedBy: string;
+  startTime: number;
+  endTime: number;
+  transferIds?: string[];
+}
+
+export interface IncidentEvidenceRecord {
+  auditId: string;
+  transferId: string;
+  timestamp: number;
+  action: AuditAction;
+  status: AuditStatus;
+  sourceChain: string;
+  destinationChain: string;
+  assetCode: string;
+  fromAddressFingerprint?: string;
+  toAddressFingerprint?: string;
+  transactionHint?: string;
+}
+
+export interface IncidentEvidenceBundle {
+  schemaVersion: 1;
+  type: 'bridgewise-incident-evidence';
+  incidentId: string;
+  generatedAt: number;
+  timeWindow: { startTime: number; endTime: number };
+  recordCount: number;
+  redaction: 'addresses-and-amounts-omitted';
+  records: IncidentEvidenceRecord[];
+  integrityHash: string;
+}
+
+export interface IncidentEvidenceExportResult extends AuditExportResult {
+  incidentId: string;
+  integrityHash: string;
+}
+
+export interface IncidentEvidenceExportAuditEvent {
+  exportId: string;
+  incidentId: string;
+  requestedBy: string;
+  createdAt: number;
+  expiresAt: number;
+  itemCount: number;
+  integrityHash: string;
+}
+
 /**
  * Summary statistics for audit logs
  */
