@@ -1,6 +1,5 @@
 import {
   TransferAuditLog,
-  AuditAction,
   AuditStatus,
   AuditSearchQuery,
   AuditSearchResult,
@@ -9,8 +8,14 @@ import {
   AuditStatistics,
   AuditAPIConfig,
   ExportFormat,
+  IncidentEvidenceBundle,
+  IncidentEvidenceExportAuditEvent,
+  IncidentEvidenceExportResult,
+  IncidentEvidenceRecord,
+  IncidentEvidenceRequest,
 } from './audit.types';
 import { randomUUID } from 'crypto';
+import { createHash } from 'crypto';
 
 /**
  * Service for storing and retrieving Stellar bridge transfer audit logs.
@@ -51,10 +56,18 @@ export class StellarTransferAuditAPI {
   private exports: Map<string, AuditExportResult> = new Map();
   private indexByTransferId: Map<string, string[]> = new Map();
   private indexByAddress: Map<string, string[]> = new Map();
+  private readonly onIncidentEvidenceExport?: (
+    event: IncidentEvidenceExportAuditEvent,
+  ) => void;
 
   constructor(
     config: Partial<AuditAPIConfig> = {},
-    options: { now?: () => number } = {},
+    options: {
+      now?: () => number;
+      onIncidentEvidenceExport?: (
+        event: IncidentEvidenceExportAuditEvent,
+      ) => void;
+    } = {},
   ) {
     this.config = {
       storageBackend: config.storageBackend ?? 'memory',
@@ -72,6 +85,7 @@ export class StellarTransferAuditAPI {
       this.config.exportRetentionDays,
     );
     this.now = options.now ?? (() => Date.now());
+    this.onIncidentEvidenceExport = options.onIncidentEvidenceExport;
   }
 
   /**
@@ -141,10 +155,10 @@ export class StellarTransferAuditAPI {
 
     // Filter by time range
     if (query.startTime !== undefined) {
-      logs = logs.filter((log) => log.timestamp >= query.startTime!);
+      logs = logs.filter((log) => log.timestamp >= query.startTime);
     }
     if (query.endTime !== undefined) {
-      logs = logs.filter((log) => log.timestamp <= query.endTime!);
+      logs = logs.filter((log) => log.timestamp <= query.endTime);
     }
 
     // Sort by timestamp (newest first)
@@ -209,6 +223,78 @@ export class StellarTransferAuditAPI {
       data: this.config.enableCompression ? await this.compress(data) : data,
     };
 
+    this.exports.set(exportId, exportResult);
+    return exportResult;
+  }
+
+  /** Build a bounded, redacted, integrity-verifiable incident evidence bundle. */
+  async exportIncidentEvidence(
+    request: IncidentEvidenceRequest,
+  ): Promise<IncidentEvidenceExportResult> {
+    validateIncidentEvidenceRequest(request);
+    if (!this.onIncidentEvidenceExport) {
+      throw new Error('Incident evidence export requires an audit callback');
+    }
+    const result = await this.search({
+      startTime: request.startTime,
+      endTime: request.endTime,
+      transferIds: request.transferIds,
+      limit: this.config.maxSearchResults,
+    });
+    if (result.total > result.items.length) {
+      throw new RangeError(
+        'Incident evidence exceeds the configured maximum; narrow the time range or transfer IDs',
+      );
+    }
+
+    const records = result.items
+      .map(toIncidentEvidenceRecord)
+      .sort(
+        (left, right) =>
+          left.timestamp - right.timestamp ||
+          left.auditId.localeCompare(right.auditId),
+      );
+    const createdAt = this.now();
+    const expiresAt =
+      createdAt + this.config.exportRetentionDays * 24 * 60 * 60 * 1000;
+    const payload = {
+      schemaVersion: 1 as const,
+      type: 'bridgewise-incident-evidence' as const,
+      incidentId: request.incidentId.trim(),
+      generatedAt: createdAt,
+      timeWindow: { startTime: request.startTime, endTime: request.endTime },
+      recordCount: records.length,
+      redaction: 'addresses-and-amounts-omitted' as const,
+      records,
+    };
+    const integrityHash = createHash('sha256')
+      .update(stableSerialize(payload))
+      .digest('hex');
+    const bundle: IncidentEvidenceBundle = { ...payload, integrityHash };
+    const exportId = randomUUID();
+    const serialized = JSON.stringify(bundle, null, 2);
+    const exportResult: IncidentEvidenceExportResult = {
+      exportId,
+      incidentId: request.incidentId.trim(),
+      integrityHash,
+      format: ExportFormat.JSON,
+      itemCount: records.length,
+      createdAt,
+      expiresAt,
+      data: this.config.enableCompression
+        ? await this.compress(serialized)
+        : serialized,
+    };
+
+    this.onIncidentEvidenceExport?.({
+      exportId,
+      incidentId: request.incidentId.trim(),
+      requestedBy: request.requestedBy.trim(),
+      createdAt,
+      expiresAt,
+      itemCount: records.length,
+      integrityHash,
+    });
     this.exports.set(exportId, exportResult);
     return exportResult;
   }
@@ -440,4 +526,108 @@ function validateRetentionDays(name: string, days: number): void {
   if (!Number.isInteger(days) || days < 1) {
     throw new RangeError(`${name} must be a positive integer`);
   }
+}
+
+export function verifyIncidentEvidenceBundle(
+  value: unknown,
+): value is IncidentEvidenceBundle {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const bundle = value as Partial<IncidentEvidenceBundle>;
+  if (
+    bundle.schemaVersion !== 1 ||
+    bundle.type !== 'bridgewise-incident-evidence' ||
+    typeof bundle.integrityHash !== 'string'
+  ) {
+    return false;
+  }
+  const { integrityHash, ...payload } = bundle;
+  const expected = createHash('sha256')
+    .update(stableSerialize(payload))
+    .digest('hex');
+  return integrityHash === expected;
+}
+
+function validateIncidentEvidenceRequest(
+  request: IncidentEvidenceRequest,
+): void {
+  if (
+    typeof request.incidentId !== 'string' ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/.test(request.incidentId.trim())
+  ) {
+    throw new TypeError('incidentId must be a short, opaque identifier');
+  }
+  if (
+    typeof request.requestedBy !== 'string' ||
+    !request.requestedBy.trim() ||
+    request.requestedBy.length > 160 ||
+    /[\r\n\0]/.test(request.requestedBy)
+  ) {
+    throw new TypeError('requestedBy must be a non-empty audit identity');
+  }
+  if (
+    !Number.isSafeInteger(request.startTime) ||
+    request.startTime < 0 ||
+    !Number.isSafeInteger(request.endTime) ||
+    request.endTime < request.startTime
+  ) {
+    throw new RangeError(
+      'Incident evidence time window must be valid and ordered',
+    );
+  }
+  if (
+    request.transferIds !== undefined &&
+    (!Array.isArray(request.transferIds) ||
+      request.transferIds.length === 0 ||
+      request.transferIds.some((id) => typeof id !== 'string' || !id.trim()))
+  ) {
+    throw new TypeError('transferIds must contain non-empty strings');
+  }
+}
+
+function toIncidentEvidenceRecord(
+  log: TransferAuditLog,
+): IncidentEvidenceRecord {
+  return {
+    auditId: log.auditId,
+    transferId: log.transferId,
+    timestamp: log.timestamp,
+    action: log.action,
+    status: log.status,
+    sourceChain: log.sourceChain,
+    destinationChain: log.destinationChain,
+    assetCode: log.assetCode,
+    fromAddressFingerprint: fingerprintSensitiveField(log.fromAddress),
+    toAddressFingerprint: fingerprintSensitiveField(log.toAddress),
+    transactionHint: transactionHint(log.txHash),
+  };
+}
+
+function fingerprintSensitiveField(
+  value: string | undefined,
+): string | undefined {
+  if (!value) return undefined;
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function transactionHint(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  if (/^0x[a-f0-9]{64}$/i.test(value)) {
+    return `${value.slice(0, 10)}...${value.slice(-8)}`;
+  }
+  return `sha256:${createHash('sha256').update(value).digest('hex').slice(0, 16)}`;
+}
+
+function stableSerialize(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableSerialize).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value)
+      .filter(([, child]) => child !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right));
+    return `{${entries
+      .map(([key, child]) => `${JSON.stringify(key)}:${stableSerialize(child)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
 }
