@@ -105,6 +105,14 @@ export interface ReserveReconciliationReport {
   };
 }
 
+/** Alert emitted once per reconciliation run that contains any asset gaps. */
+export interface ReserveReconciliationGapAlert {
+  reconciledAt: number;
+  severity: 'critical' | 'warning';
+  gaps: AssetReconciliation[];
+  report: ReserveReconciliationReport;
+}
+
 /** Inputs to a single reconciliation run. */
 export interface ReserveReconciliationInput {
   /** Reported balances (may include several accounts per asset). */

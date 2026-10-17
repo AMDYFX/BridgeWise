@@ -123,6 +123,7 @@ export interface AuditStatistics {
 export interface AuditAPIConfig {
   storageBackend: 'memory' | 'postgres' | 'mongodb';
   maxSearchResults: number;
+  auditLogRetentionDays?: number;
   exportRetentionDays: number;
   enableCompression: boolean;
 }
