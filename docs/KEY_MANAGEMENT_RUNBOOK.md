@@ -10,6 +10,14 @@ This runbook covers service credentials and the `VAULT_ENCRYPTION_KEY`. Treat bl
 - `rotateKey` replaces the value in the local map immediately. It does not provide an overlap window or update the provider. Coordinate provider-side overlap and workload rollout through the procedures below.
 - The application derives its AES key by SHA-256 hashing the `VAULT_ENCRYPTION_KEY` string. Supply a uniformly random 32-byte value encoded as 64 hexadecimal characters. Losing this value makes ciphertext encrypted with it unrecoverable; changing it without re-encrypting any retained ciphertext also prevents decryption.
 
+## Dependencies and ownership
+
+- The credential issuer must support credential creation, inspection, and revocation. Use issuer-side overlap during rotation where available; otherwise an approved maintenance window is required.
+- The production secrets manager must provide versioning, audit logs, access controls, and a tested recovery path. The workload deployment platform must inject the selected version and restart or roll every affected instance.
+- A named service owner, independent production or security approver, and on-call responder must be assigned in the deployment's support directory before production rotation. The requester cannot approve their own change.
+- The API rotation service is advisory only: it checks age and marks local keys for rotation. It does not call an issuer, persist shared state, update the secrets manager, or send notifications. Those capabilities remain external operational dependencies.
+- Blockchain signing keys and seed phrases are outside this runbook. Their HSM or custody provider, chain-specific authority-transfer procedure, and incident contacts must be documented separately.
+
 ## Create a key
 
 1. Identify the credential owner, service, environment, required permissions, expiration, and rotation date. Request the narrowest scopes and network restrictions the issuer supports.

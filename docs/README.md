@@ -14,6 +14,16 @@ Welcome to the BridgeWise API documentation! This comprehensive guide covers eve
   - Upgrade authorization and immutable-code policy
   - Fee and vault accounting invariants
   - Production monitoring and verification
+- **[MULTISIG_PROPOSAL_MONITORING.md](./MULTISIG_PROPOSAL_MONITORING.md)**
+  - Governance event sources, monitoring requirements, alert response, and deployment dependencies
+- **[MAINNET_CHANGE_APPROVAL_CHECKLIST.md](./MAINNET_CHANGE_APPROVAL_CHECKLIST.md)**
+  - Preflight, independent approval, execution, verification, and no-go criteria
+- **[DEPLOYMENT_ROLLBACK_DECISION_TREE.md](./DEPLOYMENT_ROLLBACK_DECISION_TREE.md)**
+  - Application, configuration, security, and immutable-contract incident actions
+- **[PRODUCTION_SUPPORT_ESCALATION_MATRIX.md](./PRODUCTION_SUPPORT_ESCALATION_MATRIX.md)**
+  - Severity ownership, escalation sequence, and contact-directory readiness
+- **[KEY_MANAGEMENT_RUNBOOK.md](./KEY_MANAGEMENT_RUNBOOK.md)**
+  - Production credential creation, rotation, recovery, and emergency revocation
 
 ### Getting Started
 
