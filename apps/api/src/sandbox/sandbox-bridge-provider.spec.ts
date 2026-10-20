@@ -28,8 +28,8 @@ describe('SandboxBridgeProvider', () => {
 
     expect(quote).not.toBeNull();
     expect(quote?.provider).toBe('BridgeWiseSandbox');
-    expect(quote?.fromChain).toBe(1001);
-    expect(quote?.toChain).toBe(1);
+    expect(quote?.fromChain).toBe('1001');
+    expect(quote?.toChain).toBe('1');
     expect(parseFloat(quote!.outputAmount)).toBeGreaterThan(0);
   });
 
