@@ -4,3 +4,5 @@
  */
 
 export * from './stellar';
+export { EventReplayService } from './event-replay.service';
+export type { ReplayRequest, ReplayResult } from './event-replay.service';
