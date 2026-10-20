@@ -117,7 +117,11 @@ export function checkBackwardCompatibility(
     return buildReport(changes, 0, 0, false, options);
   }
 
+  // The casts are required: the closure above cannot narrow `baseline`/`current`, and `eslint --fix`
+  // would otherwise strip them as "unnecessary".
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
   const baseDoc = baseline as Json;
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
   const currDoc = current as Json;
   const ctx: Context = { baseDoc, currDoc, add };
 
