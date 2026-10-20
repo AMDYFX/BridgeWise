@@ -24,6 +24,7 @@ import {
 } from './interfaces/webhook-payload.interface';
 import { WEBHOOK_QUEUE } from './webhook.constants';
 import { DEFAULT_RETRY_POLICY, toBullMqBackoff } from './webhook-retry-policy';
+import { filterSubscribers } from './webhook-event-filter';
 
 @Injectable()
 export class WebhookService {
@@ -162,9 +163,7 @@ export class WebhookService {
 
   private async findSubscribers(event: WebhookEvent): Promise<Webhook[]> {
     const all = await this.webhookRepo.find({ where: { isActive: true } });
-    return all.filter(
-      (w) => !w.events.length || w.events.includes(event),
-    );
+    return filterSubscribers(all, event);
   }
 
   private async scheduleDelivery(
