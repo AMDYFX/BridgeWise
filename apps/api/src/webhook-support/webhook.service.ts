@@ -23,6 +23,7 @@ import {
   WebhookPayload,
 } from './interfaces/webhook-payload.interface';
 import { WEBHOOK_QUEUE } from './webhook.constants';
+import { DEFAULT_RETRY_POLICY, toBullMqBackoff } from './webhook-retry-policy';
 
 @Injectable()
 export class WebhookService {
@@ -198,11 +199,8 @@ export class WebhookService {
     };
 
     await this.webhookQueue.add('deliver', jobData, {
-      attempts: webhook.maxRetries,
-      backoff: {
-        type: 'exponential',
-        delay: 5_000, // 5 s → 10 s → 20 s …
-      },
+      attempts: webhook.maxRetries ?? DEFAULT_RETRY_POLICY.maxAttempts,
+      backoff: toBullMqBackoff(DEFAULT_RETRY_POLICY),
       removeOnComplete: { age: 86_400 }, // keep 24 h
       removeOnFail: false,
     });
