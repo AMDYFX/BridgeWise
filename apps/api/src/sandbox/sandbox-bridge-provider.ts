@@ -17,8 +17,8 @@ export class SandboxBridgeProvider implements BridgeAdapter {
   async getQuote(params: GetQuoteDto): Promise<QuoteOption | null> {
     try {
       const quote = await this.sandboxService.getQuote({
-        fromChain: params.fromChain,
-        toChain: params.toChain,
+        fromChain: Number(params.fromChain),
+        toChain: Number(params.toChain),
         fromToken: params.fromToken,
         toToken: params.toToken,
         amount: params.amount,
@@ -31,8 +31,8 @@ export class SandboxBridgeProvider implements BridgeAdapter {
       return {
         id: quote.id,
         provider: this.name,
-        fromChain: quote.fromChain,
-        toChain: quote.toChain,
+        fromChain: String(quote.fromChain),
+        toChain: String(quote.toChain),
         fromToken: quote.fromToken,
         toToken: quote.toToken,
         inputAmount: quote.inputAmount,
