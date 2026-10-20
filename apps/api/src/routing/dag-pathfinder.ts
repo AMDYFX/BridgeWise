@@ -50,8 +50,27 @@ export class DAGPathfinder {
   }
 
   /**
+   * Calculates price impact as percentage loss due to fees and exchange rate slippage.
+   * Price impact = ((inputAmount - outputAmount) / inputAmount) * 100
+   */
+  private calculatePriceImpact(inputAmount: number, outputAmount: number): number {
+    if (inputAmount <= 0) return 0;
+    const impact = ((inputAmount - outputAmount) / inputAmount) * 100;
+    return Math.max(0, impact);
+  }
+
+  /**
+   * Validates that price impact is within acceptable thresholds.
+   * Rejects routes with excessive price impact (>5% by default).
+   */
+  private validatePriceImpact(priceImpact: number, maxThreshold = 5): boolean {
+    return priceImpact <= maxThreshold;
+  }
+
+  /**
    * Calculates optimal multi-hop execution route using depth-limited search (maxHops <= 3).
    * Accounts for bridge fees, gas costs, and intermediate gas token conversions.
+   * Includes price impact estimation safeguards.
    */
   public async findOptimalRoute(
     sourceNodeId: string,
@@ -117,6 +136,9 @@ export class DAGPathfinder {
           const hopBridgeFee = edge.bridgeFeeUsd;
           const nextAmount = accumulatedAmount * edge.exchangeRate;
 
+          // Calculate hop-level price impact
+          const hopPriceImpact = this.calculatePriceImpact(accumulatedAmount, nextAmount);
+
           totalGasCostUsd += hopGasCost;
           totalBridgeFeeUsd += hopBridgeFee;
           totalEstimatedTimeSec += edge.estimatedTimeSec;
@@ -131,12 +153,19 @@ export class DAGPathfinder {
             inputAmount: accumulatedAmount,
             outputAmount: nextAmount,
             estimatedTimeSec: edge.estimatedTimeSec,
+            priceImpactPercentage: hopPriceImpact,
           });
 
           accumulatedAmount = nextAmount;
         }
 
         const totalCostUsd = totalGasCostUsd + totalBridgeFeeUsd;
+        const totalPriceImpact = this.calculatePriceImpact(inputAmount, accumulatedAmount);
+
+        // Price impact safeguard: reject routes with excessive price impact
+        if (!this.validatePriceImpact(totalPriceImpact)) {
+          return;
+        }
 
         if (accumulatedAmount > maxOutputAmount) {
           maxOutputAmount = accumulatedAmount;
@@ -150,6 +179,7 @@ export class DAGPathfinder {
             totalCostUsd,
             totalEstimatedTimeSec,
             executionTimeMs: 0,
+            totalPriceImpactPercentage: totalPriceImpact,
           };
         }
         return;

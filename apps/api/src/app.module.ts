@@ -34,6 +34,7 @@ import { SorobanTransferLifecycleEntity } from './analytics/lifecycle/transfers/
 import { QuotesModule } from './quotes/quotes.module';
 import { RelayerModule } from './relayer/relayer.module';
 import { SandboxModule } from './sandbox/sandbox.module';
+import { TransferTraceModule } from './monitoring/transfer-trace/transfer-trace.module';
 
 @Module({
   imports: [
@@ -88,6 +89,7 @@ import { SandboxModule } from './sandbox/sandbox.module';
     SorobanLifecycleModule,
     RelayerModule,
     SandboxModule,
+    TransferTraceModule,
   ],
   controllers: [AppController],
   providers: [
