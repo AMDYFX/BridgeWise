@@ -9,3 +9,4 @@
  */
 
 export * from "./light-client";
+export * from "./commitment";
