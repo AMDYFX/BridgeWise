@@ -19,6 +19,19 @@ export type {
 } from "./types";
 
 export { parseCorpusFile, assertCorpusConsistent, CorpusValidationError, CORPUS_LIMITS } from "./regression/corpus-validator";
+export { runConformanceSuite, formatConformanceReport, BUILT_IN_CASES } from "./conformance/runner";
+export type {
+  RouteProvider,
+  ProviderHealthResult,
+  ConformanceFixture,
+  ConformanceCase,
+  ConformanceCaseOutcome,
+  ConformanceCaseResult,
+  ConformanceCaseStatus,
+  ConformanceReport,
+  ConformanceSuiteOptions,
+} from "./conformance/types";
+export { DEFAULT_CONFORMANCE_TIMEOUT_MS } from "./conformance/types";
 export { runRegressionCorpus, formatRegressionReport, diffOutcome, hopSignature } from "./regression/runner";
 export { DEFAULT_CASE_TIMEOUT_MS, DEFAULT_FEE_TOLERANCE, SUPPORTED_SCHEMA_VERSIONS } from "./regression/types";
 export type {
