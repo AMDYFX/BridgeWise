@@ -9,3 +9,6 @@
  */
 
 export * from "./light-client";
+export * from "./commitment";
+export * from "./payload-encoding";
+export * from "./schema-adapters";
