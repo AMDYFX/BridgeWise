@@ -16,18 +16,18 @@ import { TransferTraceService } from './transfer-trace.service';
 import { TransferTrace } from './transfer-trace.types';
 
 class CreateTraceDto {
-  transferId: string;
-  sourceAccount: string;
-  destinationAccount: string;
-  asset: string;
-  amount: string;
-  sourceChain: string;
-  destinationChain: string;
+  transferId!: string;
+  sourceAccount!: string;
+  destinationAccount!: string;
+  asset!: string;
+  amount!: string;
+  sourceChain!: string;
+  destinationChain!: string;
 }
 
 class AddEventDto {
-  eventType: 'initiated' | 'source_confirmed' | 'bridge_submit' | 'destination_received' | 'completed' | 'failed';
-  chain: string;
+  eventType!: 'initiated' | 'source_confirmed' | 'bridge_submit' | 'destination_received' | 'completed' | 'failed';
+  chain!: string;
   transactionHash?: string;
   blockNumber?: number;
   metadata?: Record<string, unknown>;
