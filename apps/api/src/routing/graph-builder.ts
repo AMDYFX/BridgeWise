@@ -34,6 +34,7 @@ export interface HopDetails {
   inputAmount: number;
   outputAmount: number;
   estimatedTimeSec: number;
+  priceImpactPercentage?: number;
 }
 
 export interface OptimalRoute {
@@ -46,6 +47,7 @@ export interface OptimalRoute {
   totalCostUsd: number;
   totalEstimatedTimeSec: number;
   executionTimeMs: number;
+  totalPriceImpactPercentage?: number;
 }
 
 export class GraphBuilder {
