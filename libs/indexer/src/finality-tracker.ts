@@ -53,6 +53,8 @@ export interface QuarantinedMessage {
   rolledBackAt?: number;
   /** Confirmations observed as of the last `advanceHead` call. */
   confirmations: number;
+  /** Finality confidence score (0.0 to 1.0) based on confirmations vs required. */
+  confidence: number;
 }
 
 export interface ReleaseEvent {
@@ -158,11 +160,15 @@ export class FinalityTracker extends EventEmitter {
         ? Math.max(0, currentHead - message.sourceBlockHeight + 1)
         : 0;
 
+    const cfg = this.configs.get(message.sourceChainId);
+    const confidence = cfg ? Math.min(1, confirmations / cfg.requiredConfirmations) : 0;
+
     const entry: QuarantinedMessage = {
       message,
       status: 'pending',
       quarantinedAt: Date.now(),
       confirmations,
+      confidence,
     };
 
     this.quarantine.set(message.messageId, entry);
@@ -208,6 +214,7 @@ export class FinalityTracker extends EventEmitter {
         const entry = this.quarantine.get(id);
         if (!entry || entry.status !== 'pending') continue;
         entry.confirmations = confirmations;
+        entry.confidence = Math.min(1, confirmations / cfg.requiredConfirmations);
         if (confirmations >= cfg.requiredConfirmations) {
           this.release(entry);
         }
@@ -256,6 +263,30 @@ export class FinalityTracker extends EventEmitter {
   /** Number of messages currently held in quarantine (any status), useful for metrics. */
   public get size(): number {
     return this.quarantine.size;
+  }
+
+  /**
+   * Get finality confidence for a specific transaction/message.
+   * Returns confidence score (0.0 to 1.0) based on confirmations vs required.
+   */
+  public getFinalityConfidence(messageId: string): number | null {
+    const entry = this.quarantine.get(messageId);
+    if (!entry) {
+      return null;
+    }
+    return entry.confidence;
+  }
+
+  /**
+   * Get finality confidence for all pending messages.
+   * Returns map of messageId to confidence score.
+   */
+  public getAllFinalityConfidences(): Map<string, number> {
+    const confidences = new Map<string, number>();
+    for (const [id, entry] of this.quarantine.entries()) {
+      confidences.set(id, entry.confidence);
+    }
+    return confidences;
   }
 
   // ---- internal helpers -------------------------------------------------
