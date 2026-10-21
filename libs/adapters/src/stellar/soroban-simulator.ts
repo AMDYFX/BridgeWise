@@ -1,5 +1,6 @@
 import {
   InsufficientFootprintError,
+  ResourceFeeCeilingExceededError,
   SimulationRevertError,
   SlippageExceededError,
   SorobanSimOptions,
@@ -54,6 +55,23 @@ export class SorobanSimulator {
       if (actualOutput < minExpected) {
         throw new SlippageExceededError(
           `Simulated output ${actualOutput} is below expected minimum output ${minExpected}`,
+        );
+      }
+    }
+
+    // Check resource fee ceiling if network and ceiling service are provided
+    if (options.network && options.ceilingService) {
+      const resourceFeeStroops = parseInt(minResourceFee.toString(), 10);
+      const ceilingResult = options.ceilingService.check({
+        network: options.network,
+        resourceFeeStroops,
+      });
+      if (!ceilingResult.allowed) {
+        const ceilingStroops = ceilingResult.ceilingStroops ?? 0;
+        throw new ResourceFeeCeilingExceededError(
+          options.network,
+          resourceFeeStroops,
+          ceilingStroops,
         );
       }
     }

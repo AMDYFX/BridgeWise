@@ -1,6 +1,7 @@
 import { SorobanCostBreakdownEngine } from './soroban-cost-breakdown-engine';
 import {
   InvalidQuoteError,
+  ResourceFeeCeilingExceededError,
   STROOPS_PER_XLM,
 } from './types';
 import type { SorobanRouteQuote } from './types';
@@ -27,6 +28,16 @@ function buildQuote(overrides: Partial<SorobanRouteQuote> = {}): SorobanRouteQuo
     },
     xlmUsdPrice: 0.1,
     ...overrides,
+  };
+}
+
+function createMockCeilingService(allowed = true, ceilingStroops = 5_000_000) {
+  return {
+    check: jest.fn((request: { network: string; resourceFeeStroops: number }) => ({
+      allowed,
+      ceilingStroops,
+      violations: allowed ? [] : [{ code: 'EXCEEDS_CEILING', message: 'Fee exceeds ceiling' }],
+    })),
   };
 }
 
@@ -361,5 +372,108 @@ describe('SorobanCostBreakdownEngine', () => {
     );
     // gapRaw = 12_345 raw → 0.012345 USDC → 1.2345 cents, exact.
     expect(result.slippage.gapUsdCents).toBe(1.2345);
+  });
+
+  // ─── Resource Fee Ceiling Policy Integration (#1331) ──────────────────────────
+
+  describe('Resource Fee Ceiling Policy Integration (#1331)', () => {
+    let tick: number;
+    let engine: SorobanCostBreakdownEngine;
+
+    beforeEach(() => {
+      tick = 1_000;
+    });
+
+    it('allows breakdown when resource fee is below ceiling', () => {
+      const ceilingService = createMockCeilingService(true, 5_000_000);
+      engine = new SorobanCostBreakdownEngine({ now: () => tick, ceilingService });
+      const result = engine.breakdown(buildQuote({ network: { ...buildQuote().network, resourceFeeStroops: 1_000_000 } }));
+      expect(result.totalUsdCents).toBeGreaterThan(0);
+      expect(ceilingService.check).toHaveBeenCalledWith({
+        network: 'stellar',
+        resourceFeeStroops: 1_000_000,
+      });
+    });
+
+    it('throws ResourceFeeCeilingExceededError when resource fee exceeds ceiling', () => {
+      const ceilingService = createMockCeilingService(false, 1_000_000);
+      engine = new SorobanCostBreakdownEngine({ now: () => tick, ceilingService });
+      expect(() =>
+        engine.breakdown(buildQuote({ network: { ...buildQuote().network, resourceFeeStroops: 2_000_000 } })),
+      ).toThrow(ResourceFeeCeilingExceededError);
+      expect(ceilingService.check).toHaveBeenCalledWith({
+        network: 'stellar',
+        resourceFeeStroops: 2_000_000,
+      });
+    });
+
+    it('includes network, resource fee, and ceiling in error', () => {
+      const ceilingService = createMockCeilingService(false, 500_000);
+      engine = new SorobanCostBreakdownEngine({ now: () => tick, ceilingService });
+      try {
+        engine.breakdown(buildQuote({ network: { ...buildQuote().network, resourceFeeStroops: 1_000_000 } }));
+        fail('Expected ResourceFeeCeilingExceededError');
+      } catch (err) {
+        expect(err).toBeInstanceOf(ResourceFeeCeilingExceededError);
+        expect((err as ResourceFeeCeilingExceededError).network).toBe('stellar');
+        expect((err as ResourceFeeCeilingExceededError).resourceFeeStroops).toBe(1_000_000);
+        expect((err as ResourceFeeCeilingExceededError).ceilingStroops).toBe(500_000);
+      }
+    });
+
+    it('uses destinationNetwork when sourceNetwork is not set', () => {
+      const ceilingService = createMockCeilingService(true, 5_000_000);
+      engine = new SorobanCostBreakdownEngine({ now: () => tick, ceilingService });
+      engine.breakdown(buildQuote({ sourceNetwork: '', destinationNetwork: 'ethereum' }));
+      expect(ceilingService.check).toHaveBeenCalledWith({
+        network: 'ethereum',
+        resourceFeeStroops: 100_000,
+      });
+    });
+
+    it('uses default network when neither source nor destination is set', () => {
+      const ceilingService = createMockCeilingService(true, 5_000_000);
+      engine = new SorobanCostBreakdownEngine({ now: () => tick, ceilingService });
+      engine.breakdown(buildQuote({ sourceNetwork: '', destinationNetwork: '' }));
+      expect(ceilingService.check).toHaveBeenCalledWith({
+        network: 'stellar',
+        resourceFeeStroops: 100_000,
+      });
+    });
+
+    it('breakdownBatch validates all quotes before processing', () => {
+      const ceilingService = createMockCeilingService(false, 500_000);
+      engine = new SorobanCostBreakdownEngine({ now: () => tick, ceilingService });
+      expect(() =>
+        engine.breakdownBatch([
+          buildQuote({ routeId: 'r1', network: { ...buildQuote().network, resourceFeeStroops: 1_000_000 } }),
+          buildQuote({ routeId: 'r2', network: { ...buildQuote().network, resourceFeeStroops: 2_000_000 } }),
+        ]),
+      ).toThrow(ResourceFeeCeilingExceededError);
+      // Should have checked ceiling for both quotes
+      expect(ceilingService.check).toHaveBeenCalledTimes(2);
+    });
+
+    it('breakdownBatch leaves no partial results on ceiling violation', () => {
+      const ceilingService = createMockCeilingService(false, 500_000);
+      engine = new SorobanCostBreakdownEngine({ now: () => tick, ceilingService });
+      try {
+        engine.breakdownBatch([
+          buildQuote({ routeId: 'r1', network: { ...buildQuote().network, resourceFeeStroops: 1_000_000 } }),
+          buildQuote({ routeId: 'r2', network: { ...buildQuote().network, resourceFeeStroops: 100_000 } }),
+        ]);
+        fail('Expected ResourceFeeCeilingExceededError');
+      } catch (err) {
+        expect(err).toBeInstanceOf(ResourceFeeCeilingExceededError);
+        // Both should have been checked
+        expect(ceilingService.check).toHaveBeenCalledTimes(2);
+      }
+    });
+
+    it('does not check ceiling when ceilingService is not provided', () => {
+      engine = new SorobanCostBreakdownEngine({ now: () => tick });
+      const result = engine.breakdown(buildQuote({ network: { ...buildQuote().network, resourceFeeStroops: 100_000_000 } }));
+      expect(result.totalUsdCents).toBeGreaterThan(0);
+    });
   });
 });

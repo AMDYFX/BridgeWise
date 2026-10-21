@@ -7,4 +7,5 @@ export type {
   CostWeights,
   RankedRoute,
   RouteCostEvaluation,
+  CeilingService,
 } from './soroban-cost-optimizer.types';

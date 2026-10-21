@@ -29,6 +29,8 @@ export interface CostRoute {
   slippagePercent?: number;
   /** Notional amount being transferred, in USD. */
   amountUsd: number;
+  /** Network identifier for resource fee ceiling enforcement (e.g. "stellar-testnet"). */
+  network?: string;
 }
 
 /**
@@ -66,6 +68,13 @@ export interface RouteCostEvaluation {
   totalCostUsd: number;
   /** Cost as a percent of the transfer amount (0-100). */
   costPercent: number;
+  /** Whether the route was filtered due to exceeding the resource fee ceiling. */
+  filteredByCeiling?: boolean;
+  /** Ceiling violation details if filtered. */
+  ceilingViolation?: {
+    ceilingStroops: number;
+    resourceFeeStroops: number;
+  };
 }
 
 /** A route plus its computed total cost and rank. */
@@ -86,4 +95,15 @@ export interface CostOptimizationStats {
   medianCostUsd: number;
   minCostUsd: number;
   maxCostUsd: number;
+  /** Number of routes filtered by ceiling policy. */
+  filteredByCeilingCount: number;
+}
+
+/** Ceiling service interface for cost optimization. */
+export interface CeilingService {
+  check: (request: { network: string; resourceFeeStroops: number }) => {
+    allowed: boolean;
+    ceilingStroops: number | null;
+    violations: Array<{ code: string; message: string }>;
+  };
 }
