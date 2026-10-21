@@ -10,6 +10,7 @@ import { WebhookDeliveryService } from './webhook-delivery.service';
 import { WebhookProcessor } from './webhook.processor';
 import { WebhookService } from './webhook.service';
 import { WebhookSignatureService } from './webhook-signature.service';
+import { DEFAULT_RETRY_POLICY, toBullMqBackoff } from './webhook-retry-policy';
 
 @Module({
   imports: [
@@ -18,8 +19,8 @@ import { WebhookSignatureService } from './webhook-signature.service';
     BullModule.registerQueue({
       name: WEBHOOK_QUEUE,
       defaultJobOptions: {
-        attempts: 5,
-        backoff: { type: 'exponential', delay: 5_000 },
+        attempts: DEFAULT_RETRY_POLICY.maxAttempts,
+        backoff: toBullMqBackoff(DEFAULT_RETRY_POLICY),
         removeOnComplete: { age: 86_400 },
         removeOnFail: false,
       },
