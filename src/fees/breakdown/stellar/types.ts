@@ -171,3 +171,21 @@ export class InvalidQuoteError extends Error {
     this.name = 'InvalidQuoteError';
   }
 }
+
+export class ResourceFeeCeilingExceededError extends Error {
+  public readonly network: string;
+  public readonly resourceFeeStroops: number;
+  public readonly ceilingStroops: number;
+  constructor(
+    network: string,
+    resourceFeeStroops: number,
+    ceilingStroops: number,
+    message = `Soroban resource fee ${resourceFeeStroops} stroops exceeds ceiling ${ceilingStroops} stroops for network "${network}"`,
+  ) {
+    super(message);
+    this.name = 'ResourceFeeCeilingExceededError';
+    this.network = network;
+    this.resourceFeeStroops = resourceFeeStroops;
+    this.ceilingStroops = ceilingStroops;
+  }
+}

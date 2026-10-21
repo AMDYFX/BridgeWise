@@ -1,5 +1,6 @@
 import {
   InvalidQuoteError,
+  ResourceFeeCeilingExceededError,
   STROOPS_PER_XLM,
   type AssetAmount,
   type BreakdownAggregate,
@@ -29,6 +30,17 @@ export interface SorobanCostBreakdownEngineOptions {
    * wins over each quote's `xlmUsdPrice`.
    */
   xlmUsdPriceOverride?: number;
+  /**
+   * Optional ceiling service for enforcing resource fee limits.
+   * When provided, validates the resource fee against the ceiling before breakdown.
+   */
+  ceilingService?: {
+    check: (request: { network: string; resourceFeeStroops: number }) => {
+      allowed: boolean;
+      ceilingStroops: number | null;
+      violations: Array<{ code: string; message: string }>;
+    };
+  };
 }
 
 // ─── Engine ───────────────────────────────────────────────────────────────────
@@ -55,10 +67,12 @@ export interface SorobanCostBreakdownEngineOptions {
 export class SorobanCostBreakdownEngine {
   private readonly now: () => number;
   private readonly xlmUsdPriceOverride: number | undefined;
+  private readonly ceilingService: SorobanCostBreakdownEngineOptions['ceilingService'];
 
   constructor(options: SorobanCostBreakdownEngineOptions = {}) {
     this.now = options.now ?? (() => Date.now());
     this.xlmUsdPriceOverride = options.xlmUsdPriceOverride;
+    this.ceilingService = options.ceilingService;
   }
 
   // ─── Public API ────────────────────────────────────────────────────────
@@ -66,10 +80,28 @@ export class SorobanCostBreakdownEngine {
   /**
    * Decompose a single quote.
    * @throws `InvalidQuoteError` if any required field is malformed.
+   * @throws `ResourceFeeCeilingExceededError` if resource fee exceeds ceiling.
    */
   breakdown(quote: SorobanRouteQuote): SorobanQuoteBreakdown {
     this.assertValidQuote(quote);
     const xlmUsdPrice = this.xlmUsdPriceOverride ?? quote.xlmUsdPrice;
+
+    // Check resource fee ceiling if ceiling service is configured
+    if (this.ceilingService) {
+      const network = quote.sourceNetwork || quote.destinationNetwork || 'stellar';
+      const ceilingResult = this.ceilingService.check({
+        network,
+        resourceFeeStroops: quote.network.resourceFeeStroops,
+      });
+      if (!ceilingResult.allowed) {
+        const ceilingStroops = ceilingResult.ceilingStroops ?? 0;
+        throw new ResourceFeeCeilingExceededError(
+          network,
+          quote.network.resourceFeeStroops,
+          ceilingStroops,
+        );
+      }
+    }
 
     const bridgeFee = this.computeBridgeFee(
       quote.bridgeFee,
@@ -129,6 +161,26 @@ export class SorobanCostBreakdownEngine {
    */
   breakdownBatch(quotes: SorobanRouteQuote[]): SorobanQuoteBreakdown[] {
     for (const quote of quotes) this.assertValidQuote(quote);
+
+    // Pre-check ceiling for all quotes if ceiling service is configured
+    if (this.ceilingService) {
+      for (const quote of quotes) {
+        const network = quote.sourceNetwork || quote.destinationNetwork || 'stellar';
+        const ceilingResult = this.ceilingService.check({
+          network,
+          resourceFeeStroops: quote.network.resourceFeeStroops,
+        });
+        if (!ceilingResult.allowed) {
+          const ceilingStroops = ceilingResult.ceilingStroops ?? 0;
+          throw new ResourceFeeCeilingExceededError(
+            network,
+            quote.network.resourceFeeStroops,
+            ceilingStroops,
+          );
+        }
+      }
+    }
+
     return quotes.map((quote) => this.breakdown(quote));
   }
 

@@ -6,6 +6,7 @@ import {
   DEFAULT_COST_WEIGHTS,
   RankedRoute,
   RouteCostEvaluation,
+  CeilingService,
 } from './soroban-cost-optimizer.types';
 
 // ─── Pure helpers ────────────────────────────────────────────────────────────
@@ -70,6 +71,9 @@ function round(value: number, decimals = 4): number {
  * sums of bridge, network, gas, and slippage components — weights are
  * configurable at construction time and per-call.
  *
+ * Supports optional resource fee ceiling enforcement to filter out routes
+ * that exceed configured per-network limits.
+ *
  * Example:
  *   const engine = new SorobanRouteCostOptimizer();
  *   const ranked = engine.rankLowestCost(routes);
@@ -77,14 +81,21 @@ function round(value: number, decimals = 4): number {
  */
 export class SorobanRouteCostOptimizer {
   private weights: Required<CostWeights>;
+  private ceilingService?: CeilingService;
 
-  constructor(weights: CostWeights = {}) {
+  constructor(weights: CostWeights = {}, ceilingService?: CeilingService) {
     this.weights = { ...DEFAULT_COST_WEIGHTS, ...weights };
+    this.ceilingService = ceilingService;
   }
 
   /** Update the configured cost weights. */
   updateWeights(weights: CostWeights): void {
     this.weights = { ...this.weights, ...weights };
+  }
+
+  /** Update the ceiling service. */
+  updateCeilingService(ceilingService?: CeilingService): void {
+    this.ceilingService = ceilingService;
   }
 
   /** Return a copy of the currently configured weights. */
@@ -94,6 +105,7 @@ export class SorobanRouteCostOptimizer {
 
   /**
    * Evaluate all routes without ranking — returns cost details for each.
+   * Routes that exceed the ceiling are marked as filtered.
    */
   evaluate(routes: CostRoute[]): RouteCostEvaluation[] {
     return routes.map((route) => this.evaluateOne(route));
@@ -102,18 +114,20 @@ export class SorobanRouteCostOptimizer {
   /**
    * Rank routes ascending by total cost (cheapest first). Optionally
    * accepts per-call weights that override the configured ones.
+   * Routes exceeding the ceiling are excluded from ranking.
    */
   rankLowestCost(routes: CostRoute[], weights?: CostWeights): RankedRoute[] {
     const evaluated = this.evaluate(routes);
-    const sorted = [...evaluated].sort((a, b) => a.totalCostUsd - b.totalCostUsd);
+    const allowed = evaluated.filter((e) => !e.filteredByCeiling);
+    const sorted = [...allowed].sort((a, b) => a.totalCostUsd - b.totalCostUsd);
     if (weights) {
       // Recompute with per-call weights, then re-sort.
-      const perCall = routes
+      const perCall = allowed
         .map((r) => {
-          const result = calculateRouteCost(r, weights);
+          const result = calculateRouteCost(r.route, weights);
           return {
             rank: 0,
-            route: r,
+            route: r.route,
             totalCostUsd: result.totalCostUsd,
             costPercent: result.costPercent,
             breakdown: result.breakdown,
@@ -134,39 +148,67 @@ export class SorobanRouteCostOptimizer {
   /** Aggregate stats for a set of routes using the configured weights. */
   stats(routes: CostRoute[]): CostOptimizationStats {
     const evaluated = this.evaluate(routes);
-    if (evaluated.length === 0) {
+    const allowed = evaluated.filter((e) => !e.filteredByCeiling);
+    const filteredCount = evaluated.length - allowed.length;
+
+    if (allowed.length === 0) {
       return {
-        routeCount: 0,
+        routeCount: evaluated.length,
         cheapestRouteId: null,
         mostExpensiveRouteId: null,
         averageCostUsd: 0,
         medianCostUsd: 0,
         minCostUsd: 0,
         maxCostUsd: 0,
+        filteredByCeilingCount: filteredCount,
       };
     }
-    const costs = evaluated.map((e) => e.totalCostUsd);
+    const costs = allowed.map((e) => e.totalCostUsd);
     const sorted = [...costs].sort((a, b) => a - b);
     const minIdx = costs.indexOf(Math.min(...costs));
     const maxIdx = costs.indexOf(Math.max(...costs));
     return {
       routeCount: evaluated.length,
-      cheapestRouteId: evaluated[minIdx]?.route.id ?? null,
-      mostExpensiveRouteId: evaluated[maxIdx]?.route.id ?? null,
+      cheapestRouteId: allowed[minIdx]?.route.id ?? null,
+      mostExpensiveRouteId: allowed[maxIdx]?.route.id ?? null,
       averageCostUsd: round(costs.reduce((a, b) => a + b, 0) / costs.length),
       medianCostUsd: round(sorted[Math.floor(sorted.length / 2)]),
       minCostUsd: round(Math.min(...costs)),
       maxCostUsd: round(Math.max(...costs)),
+      filteredByCeilingCount: filteredCount,
     };
   }
 
   private evaluateOne(route: CostRoute): RouteCostEvaluation {
+    // Check ceiling first
+    if (this.ceilingService && route.network) {
+      const ceilingResult = this.ceilingService.check({
+        network: route.network,
+        resourceFeeStroops: route.networkFeeStroops,
+      });
+      if (!ceilingResult.allowed) {
+        const ceilingStroops = ceilingResult.ceilingStroops ?? 0;
+        return {
+          route,
+          breakdown: { bridgeCostUsd: 0, networkCostUsd: 0, gasCostUsd: 0, slippageCostUsd: 0 },
+          totalCostUsd: 0,
+          costPercent: 0,
+          filteredByCeiling: true,
+          ceilingViolation: {
+            ceilingStroops,
+            resourceFeeStroops: route.networkFeeStroops,
+          },
+        };
+      }
+    }
+
     const result = calculateRouteCost(route, this.weights);
     return {
       route,
       breakdown: result.breakdown,
       totalCostUsd: result.totalCostUsd,
       costPercent: result.costPercent,
+      filteredByCeiling: false,
     };
   }
 }
